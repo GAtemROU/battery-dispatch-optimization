@@ -1,294 +1,163 @@
-# Project Brief: Battery Dispatch Optimizer
+# Battery Dispatch Optimizer
 
-## 1. Objective
+Wholesale day-ahead arbitrage for a simulated commercial battery, using real German SMARD prices.
 
-Build a small, polished, reproducible Python project demonstrating battery scheduling optimization using real German wholesale electricity price data.
+Portfolio-style project: clean data pipeline, MILP dispatch, simple baselines, hold-out evaluation, tests, notebook, and figures.
 
-The project is intended as a portfolio piece for a Data Scientist position at coneva, focused on energy flexibility, forecasting, and optimization.
+## What it does
 
-The goal is to demonstrate practical skills in:
-- Python, Pandas, NumPy, SciPy, and Jupyter.
-- Mathematical optimization using CVXPY and a suitable solver.
-- Data cleaning, validation, and exploratory analysis.
-- Energy-system constraints and quantitative evaluation.
-- Clear reporting, visualization, testing, and reproducibility.
+Given hourly day-ahead prices, schedule charge/discharge to maximize:
 
-Keep the project simple, technically correct, and easy to understand. Prioritize a working end-to-end result over unnecessary features.
+```text
+sum_t  price_t * (discharge_t - charge_t)
+```
 
-## 2. Core Use Case
+subject to battery power, energy, efficiency, and no simultaneous charge and discharge.
 
-Given historical hourly German day-ahead electricity prices, determine when a simulated commercial battery should charge and discharge to maximize its wholesale-market arbitrage value.
+**Strategies**
 
-Compare three strategies:
+| Strategy | Idea |
+|----------|------|
+| `idle` | Do nothing (value = 0) |
+| `clock_window` | Charge 12–15h, discharge 18–21h (EDA-based rule) |
+| `optimized` | Full-horizon MILP (perfect foresight benchmark) |
+| `day_ahead_rolling` | Each day: MILP on that day's actual DA prices only; SOC carries overnight |
+| `forecast_optimize` | Seasonal-naive 7-day hour-mean forecast → MILP on forecast → P&L on actual |
 
-1. Idle battery: no charging or discharging.
-2. Rule-based baseline: charge during relatively cheap hours and discharge during expensive hours.
-3. Optimized schedule: use mathematical optimization to maximize arbitrage value subject to battery constraints.
+`optimized` is an **upper bound**, not a deployable controller. `day_ahead_rolling` matches planning after the day-ahead auction. `forecast_optimize` is closer to deciding before prices are known.
 
-The optimization model may use the entire historical price series as an idealized benchmark. Clearly explain that this assumes perfect foresight and does not represent a deployable real-time trading strategy.
+## Main results
 
-Do not claim that the results represent actual customer savings or realized trading profits.
+**Battery (illustrative):** 100 kWh, ±50 kW, η_c = η_d = 95%, start/end SOC = 50%.
 
-## 3. Data Source
+**Data:** DE day-ahead prices, 2026-08-28 → 2026-10-28 (hourly SMARD export).
 
-Use SMARD, the German electricity market data platform:
+**Full sample** (perfect-foresight window for the first three strategies):
 
-https://www.smard.de/en/downloadcenter/download-market-data
+| Strategy | Arbitrage (EUR) | vs clock |
+|----------|----------------:|---------:|
+| idle | 0 | — |
+| clock_window | 864 | — |
+| optimized | 1,234 | +43% |
 
-Download hourly day-ahead wholesale electricity prices for the Germany/Luxembourg bidding zone, using a recent historical period with sufficient valid observations.
+**Hold-out** (first 31 days warm-up, last 31 days scored):
 
-Start with 4–8 weeks of data.
+| Strategy | Arbitrage (EUR) | vs clock |
+|----------|----------------:|---------:|
+| idle | 0 | — |
+| clock_window | 351 | — |
+| optimized (test window) | 531 | +51% |
+| day_ahead_rolling | 529 | +51% |
+| forecast_optimize | 505 | +44% |
 
-Requirements:
-- Store the original downloaded file locally under `data/raw/`.
-- Document the download steps, source, selected period, units, and licensing.
-- Never fabricate or silently replace missing observations.
-- Handle timestamps, sorting, duplicate records, missing values, and price units explicitly.
-- Convert prices from EUR/MWh to EUR/kWh where necessary.
-- Make the analysis reproducible from the documented input file.
-- Do not build a complex API integration unless it is straightforward and necessary.
+On this sample, most value is **within-day** spread: day-ahead rolling nearly matches the test-window oracle. The naive forecast loses a modest amount (~26 EUR vs oracle on the test half).
 
-If downloading data is not possible, create a clearly documented ingestion interface and ask the user to supply the file. Do not substitute fabricated data for real observations.
+Figures: `reports/figures/`. Tables: `reports/strategy_comparison*.csv`.
 
-## 4. Technology Stack
+## Setup
 
-Use:
-- Python 3.11 or another compatible, documented version.
-- Pandas and NumPy for data processing.
-- CVXPY for optimization modeling.
-- HiGHS as the preferred solver if compatible with the chosen CVXPY model.
-- Matplotlib for visualizations.
-- pytest for automated tests.
-- Jupyter Notebook for exploratory analysis and final presentation.
-- Git and `requirements.txt` for reproducibility.
+```bash
+python -m venv env
+source env/bin/activate          # Windows: env\Scripts\activate
+pip install -r requirements.txt
+```
 
-Avoid unnecessary dependencies, web applications, databases, cloud services, Docker, or machine-learning frameworks.
+Python 3.11+ (developed on 3.12). Solver: **HiGHS** via CVXPY.
 
-## 5. Battery Assumptions
+## Reproduce
 
-Use the following illustrative parameters, configurable in one place:
+```bash
+source env/bin/activate
 
-- Energy capacity: 100 kWh.
-- Maximum charging power: 50 kW.
-- Maximum discharging power: 50 kW.
-- Charging efficiency: 95%.
-- Discharging efficiency: 95%.
-- Initial state of charge: 50% of capacity.
-- Final state of charge: equal to initial state of charge.
-- Time interval: one hour.
+# tests
+python -m pytest tests/ -q
 
-These are simulation assumptions, not specifications of an actual coneva customer system.
+# load data, run strategies, write figures (example)
+python - <<'PY'
+from src.data_loader import load_clean_prices
+from src.battery import DEFAULT_BATTERY
+from src.optimizer import optimize_dispatch
+from src.strategies import (
+    idle_strategy, clock_window_strategy,
+    day_ahead_rolling_strategy, forecast_optimize_strategy, holdout_split,
+)
+from src.evaluation import evaluate_schedule, comparison_table
+from src.visualization import generate_price_eda_figures, plot_strategy_arbitrage_comparison
 
-Use consistent units throughout the model. For hourly intervals, 50 kW corresponds to a maximum of 50 kWh of energy charged or discharged in one interval.
+prices, report = load_clean_prices()
+print(report)
 
-## 6. Optimization Model
+# full-sample benchmark
+opt = optimize_dispatch(prices)
+print("full-horizon optimal EUR:", round(opt.objective_value, 2))
 
-Implement a linear or mixed-integer linear optimization model.
+# hold-out comparison
+warm, test, meta = holdout_split(prices, frac=0.5)
+print(meta)
+batt = DEFAULT_BATTERY
+metrics = [
+    evaluate_schedule(idle_strategy(test, batt), strategy_name="idle"),
+    evaluate_schedule(clock_window_strategy(test, batt), strategy_name="clock_window"),
+    evaluate_schedule(optimize_dispatch(test, batt).schedule, strategy_name="optimized_full_test"),
+    evaluate_schedule(day_ahead_rolling_strategy(test, batt), strategy_name="day_ahead_rolling"),
+    evaluate_schedule(
+        forecast_optimize_strategy(test, batt, history=warm, lookback_days=7),
+        strategy_name="forecast_optimize",
+    ),
+]
+print(comparison_table(metrics))
+generate_price_eda_figures(prices)
+plot_strategy_arbitrage_comparison(comparison_table(metrics))
+PY
+```
 
-Decision variables for each time interval:
-- Charging energy in kWh.
-- Discharging energy in kWh.
-- Battery state of charge in kWh.
-- Binary charging/discharging mode variables if needed to prohibit simultaneous charging and discharging.
+Interactive walkthrough: `notebooks/battery_dispatch.ipynb` (run with the project venv as kernel).
 
-Objective:
+## Project layout
 
-Maximize the wholesale-market arbitrage value:
-
-Sum over time of:
-
-`price_eur_per_kwh * (discharge_kwh - charge_kwh)`
-
-The price is in EUR/kWh and interval duration is one hour.
-
-State-of-charge transition:
-
-`SOC[t+1] = SOC[t] + charging_efficiency * charge[t] - discharge[t] / discharging_efficiency`
-
-Constraints:
-- State of charge remains between zero and battery capacity.
-- Charging and discharging remain within their power limits.
-- Initial state of charge is fixed.
-- Final state of charge equals initial state of charge.
-- Simultaneous charging and discharging is prohibited, preferably through binary mode variables and a MILP formulation.
-- The solver must return an optimal or otherwise explicitly handled status.
-
-Use the same assumptions and economic accounting across all strategy comparisons.
-
-The model optimizes energy arbitrage only. Exclude grid charges, taxes, levies, market access fees, degradation costs, imbalance costs, and retail tariff effects from the initial version. State these exclusions in the report.
-
-## 7. Baseline Strategies
-
-### A. Idle baseline
-Keep the battery inactive. Arbitrage value is zero.
-
-### B. Rule-based baseline
-Implement a simple, deterministic heuristic that:
-- Uses historical price thresholds or daily price rankings.
-- Respects the same battery capacity and power limits.
-- Accounts for charging and discharging efficiencies.
-- Maintains a valid state of charge.
-- Respects the final state-of-charge condition.
-
-Document the heuristic clearly. It is a benchmark, not necessarily an optimal controller.
-
-### C. Optimized strategy
-Use CVXPY and the selected solver to calculate the optimal schedule.
-
-All three strategies must use consistent definitions of arbitrage value and energy flows.
-
-## 8. Evaluation Metrics
-
-Calculate and report:
-- Total arbitrage value in EUR over the evaluated period.
-- Arbitrage value per unit of battery capacity, in EUR/kWh of capacity.
-- Total energy charged and discharged, in kWh.
-- Equivalent full cycles, with the definition documented.
-- Hours spent charging and discharging.
-- Minimum and maximum state of charge.
-- Constraint violations.
-- Improvement over the rule-based strategy, when its value is nonzero.
-
-Do not report percentage improvement over a zero-valued baseline.
-
-Clearly distinguish cumulative arbitrage value from actual electricity-bill savings.
-
-## 9. Visualizations
-
-Produce at least three clear, report-quality figures:
-
-1. Electricity prices over time, with useful units and date labels.
-2. Optimized battery charging/discharging schedule and state of charge.
-3. Comparison of arbitrage value across the three strategies.
-
-Optionally add a sensitivity chart showing how arbitrage value changes with battery efficiency or capacity.
-
-Use descriptive titles, axis labels, legends, units, readable date formatting, and consistent terminology.
-
-Save the figures to `reports/figures/` so they can be inspected without rerunning the notebook.
-
-## 10. Project Structure
-
-Use this structure:
-
+```text
 battery-dispatch-optimizer/
-    README.md
-    requirements.txt
-    .gitignore
-    data/
-        raw/
-        processed/
-        README.md
-    notebooks/
-        battery_dispatch.ipynb
-    src/
-        __init__.py
-        data_loader.py
-        optimizer.py
-        strategies.py
-        evaluation.py
-        visualization.py
-    tests/
-        test_data_loader.py
-        test_optimizer.py
-        test_evaluation.py
-    reports/
-        figures/
-        report.md
+  data/
+    raw/                 # original SMARD CSV (prices-de-aug-oct.csv)
+    processed/           # cleaned hourly series
+    README.md            # source, units, cleaning notes
+  src/
+    battery.py           # parameters (single config point)
+    data_loader.py       # load / validate / unit convert
+    optimizer.py         # CVXPY + HiGHS MILP
+    strategies.py        # idle, clock, rolling DA, forecast
+    evaluation.py        # metrics + constraint checks
+    visualization.py     # figures
+  tests/                 # pytest
+  notebooks/battery_dispatch.ipynb
+  reports/
+    figures/             # PNG outputs
+    *.csv                # comparison and sensitivity tables
+  requirements.txt
+```
 
-Keep modules small and responsibilities clear. Avoid overengineering. If the final structure becomes unnecessarily complicated, simplify it while retaining separation between data handling, optimization, and evaluation.
+## Model (short)
 
-## 11. Implementation Plan
+- **Objective:** maximize wholesale arbitrage in EUR (grid-side charge/discharge × price).
+- **Dynamics:** `SOC[t+1] = SOC[t] + η_c·charge[t] − discharge[t]/η_d`
+- **Constraints:** SOC ∈ [0, capacity], power caps, fixed initial SOC, optional final SOC, binary mode to forbid simultaneous charge and discharge.
+- **Not included:** grid fees, taxes, imbalance, degradation, retail tariffs, forecasting ML models.
 
-### Phase 1 — Data ingestion and validation
-- Create the repository and Python environment.
-- Acquire the historical SMARD CSV.
-- Inspect its schema and identify the actual price and timestamp columns.
-- Implement data loading and cleaning.
-- Validate timestamps, units, missing values, and duplicate observations.
-- Produce an initial price visualization.
+## Data notes
 
-Deliverable: a clean, validated hourly price series and documented data source.
+- Source: [SMARD](https://www.smard.de/en/downloadcenter/download-market-data) day-ahead prices (DE export under `data/raw/prices-de-aug-oct.csv`).
+- Units: EUR/MWh in raw file → EUR/kWh in the model (`/ 1000`).
+- Cleaning: sort, 1h intervals, no fabricated fills; one DST fall-back duplicate hour averaged (documented in `data/README.md`).
+- Negative prices are kept (valid market outcomes).
 
-### Phase 2 — Optimization model
-- Implement battery parameters and state transitions.
-- Formulate the objective and constraints.
-- Implement the CVXPY model.
-- Select and test a compatible solver.
-- Validate solution status and numerical feasibility.
-- Test edge cases such as constant prices, insufficient data, and negative prices.
+## Limitations
 
-Deliverable: a working optimizer with constraint checks.
+- Perfect-foresight and even test-window optimization overstate what a live policy can earn without knowing future prices.
+- Day-ahead rolling assumes next-day DA prices are known when planning (reasonable after auction; not before).
+- Forecast is a simple seasonal naive — not a production price model.
+- Results are **wholesale arbitrage value**, not customer bill savings or realized trading profit.
+- Battery parameters are illustrative, not a real asset.
 
-### Phase 3 — Baselines and comparison
-- Implement the idle baseline.
-- Implement the deterministic rule-based baseline.
-- Calculate the same metrics for every strategy.
-- Generate the strategy-comparison table.
-- Confirm that all strategies respect battery limits and final state of charge.
+## License / use
 
-Deliverable: reproducible quantitative comparisons.
-
-### Phase 4 — Reporting and sensitivity analysis
-- Generate the required plots.
-- Run at least one small sensitivity analysis.
-- Write a concise report describing methods, results, assumptions, and limitations.
-- Explain the perfect-foresight assumption and the distinction between wholesale arbitrage value and customer savings.
-
-Deliverable: a report that can be understood without reading the source code.
-
-### Phase 5 — Quality and polish
-- Add unit tests.
-- Ensure the project runs from a clean Python environment.
-- Verify that file paths are repository-relative.
-- Document setup and execution commands.
-- Check that the notebook runs from top to bottom.
-- Remove unused dependencies, dead code, and misleading claims.
-
-Deliverable: a clean, reproducible portfolio repository.
-
-Target completion time: 3–5 focused working days.
-
-## 12. Acceptance Criteria
-
-The project is complete when:
-
-- A real historical price dataset has been used.
-- The source, period, and units are documented.
-- The optimization model solves successfully.
-- The battery obeys all physical constraints.
-- Simultaneous charging and discharging is prohibited.
-- The initial and final state of charge are consistent.
-- All three strategies are evaluated using the same metric definitions.
-- The report includes numerical results and at least three useful figures.
-- Automated tests pass.
-- The project can be reproduced using documented commands.
-- Limitations and modeling assumptions are explicit.
-- No results, data points, or performance claims have been fabricated.
-
-## 13. Scope Boundaries
-
-Do not implement in version one:
-- Forecasting models.
-- Real-time trading or control.
-- Customer billing simulations.
-- PV generation or EV charging integration.
-- Web dashboards.
-- Live market APIs.
-- Complex battery degradation models.
-
-These may be future extensions, but the first version must remain focused on a correct and polished optimization workflow.
-
-## 14. Final Deliverables
-
-Produce:
-1. A clean Git repository.
-2. A Jupyter notebook with the complete analysis.
-3. Modular, tested Python code.
-4. Saved figures.
-5. A concise report in `reports/report.md`.
-6. A README containing setup instructions, a project summary, the main findings, and limitations.
-
-At the end, provide a brief summary of the implemented work, the actual numerical results obtained, the tests run, any remaining limitations, and the exact commands needed to reproduce the analysis.
-
-Do not claim completion of any step that has not actually been executed and verified.
+Educational portfolio project. Follow SMARD terms for the market data files you download.
