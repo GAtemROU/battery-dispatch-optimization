@@ -196,6 +196,9 @@ def plot_strategy_arbitrage_comparison(
         "idle": "#9e9e9e",
         "clock_window": "#2e75b6",
         "optimized": "#c45911",
+        "optimized_full_test": "#c45911",
+        "day_ahead_rolling": "#548235",
+        "forecast_optimize": "#7030a0",
     }
     bar_colors = [colors.get(str(s), "#4f4f4f") for s in df["strategy"]]
     ax.bar(df["strategy"].astype(str), df["arbitrage_eur"], color=bar_colors, edgecolor="white")
@@ -295,6 +298,9 @@ def plot_cumulative_arbitrage(
         "idle": ("#9e9e9e", "--"),
         "clock_window": ("#2e75b6", "-"),
         "optimized": ("#c45911", "-"),
+        "optimized_full_test": ("#c45911", "-"),
+        "day_ahead_rolling": ("#548235", "-"),
+        "forecast_optimize": ("#7030a0", "-"),
     }
     for name, sched in schedules.items():
         ts = pd.to_datetime(sched["timestamp"])

@@ -25,6 +25,9 @@ def evaluate_schedule(
     *,
     strategy_name: str | None = None,
     tol: float = 1e-6,
+    require_final_soc: bool = True,
+    initial_soc_kwh: float | None = None,
+    final_soc_kwh: float | None = None,
 ) -> dict[str, Any]:
     """Compute metrics and constraint-violation flags for one schedule."""
     battery = battery or DEFAULT_BATTERY
@@ -41,6 +44,12 @@ def evaluate_schedule(
 
     eta_c = battery.charge_efficiency
     eta_d = battery.discharge_efficiency
+    soc0_target = (
+        battery.initial_soc_kwh if initial_soc_kwh is None else float(initial_soc_kwh)
+    )
+    socT_target = (
+        battery.final_soc_kwh if final_soc_kwh is None else float(final_soc_kwh)
+    )
 
     # Rebuild SOC path for consistency check.
     soc_path = np.zeros(len(df) + 1)
@@ -60,6 +69,7 @@ def evaluate_schedule(
     hours_charge = int((charge > tol).sum())
     hours_discharge = int((discharge > tol).sum())
 
+    final_mismatch = float(abs(soc_path[-1] - socT_target))
     violations = {
         "soc_below_zero": int((soc_path < -tol).sum()),
         "soc_above_capacity": int((soc_path > battery.capacity_kwh + tol).sum()),
@@ -70,8 +80,8 @@ def evaluate_schedule(
         "simultaneous_charge_discharge": int(
             ((charge > tol) & (discharge > tol)).sum()
         ),
-        "initial_soc_mismatch": float(abs(soc_path[0] - battery.initial_soc_kwh)),
-        "final_soc_mismatch": float(abs(soc_path[-1] - battery.final_soc_kwh)),
+        "initial_soc_mismatch": float(abs(soc_path[0] - soc0_target)),
+        "final_soc_mismatch": final_mismatch,
         "soc_dynamics_mismatch_max": float(
             np.max(np.abs(soc_e - soc_path[1:])) if len(df) else 0.0
         ),
@@ -83,7 +93,7 @@ def evaluate_schedule(
         + violations["discharge_above_power"]
         + violations["simultaneous_charge_discharge"]
         + (violations["initial_soc_mismatch"] > tol)
-        + (violations["final_soc_mismatch"] > 1e-4)
+        + (require_final_soc and final_mismatch > 1e-4)
     )
 
     name = strategy_name or schedule.attrs.get("strategy") or "unknown"
