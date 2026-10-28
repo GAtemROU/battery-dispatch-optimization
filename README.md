@@ -68,50 +68,25 @@ Python 3.11+ (developed on 3.12). Solver: **HiGHS** via CVXPY.
 
 ```bash
 source env/bin/activate
-
-# tests
 python -m pytest tests/ -q
-
-# load data, run strategies, write figures (example)
-python - <<'PY'
-from src.data_loader import load_clean_prices
-from src.battery import DEFAULT_BATTERY
-from src.optimizer import optimize_dispatch
-from src.strategies import (
-    idle_strategy, clock_window_strategy,
-    day_ahead_rolling_strategy, forecast_optimize_strategy, holdout_split,
-)
-from src.evaluation import evaluate_schedule, comparison_table
-from src.visualization import generate_price_eda_figures, plot_strategy_arbitrage_comparison
-
-prices, report = load_clean_prices()
-print(report)
-
-# full-sample benchmark
-opt = optimize_dispatch(prices)
-print("full-horizon optimal EUR:", round(opt.objective_value, 2))
-
-# hold-out comparison
-warm, test, meta = holdout_split(prices, frac=0.5)
-print(meta)
-batt = DEFAULT_BATTERY
-metrics = [
-    evaluate_schedule(idle_strategy(test, batt), strategy_name="idle"),
-    evaluate_schedule(clock_window_strategy(test, batt), strategy_name="clock_window"),
-    evaluate_schedule(optimize_dispatch(test, batt).schedule, strategy_name="optimized_full_test"),
-    evaluate_schedule(day_ahead_rolling_strategy(test, batt), strategy_name="day_ahead_rolling"),
-    evaluate_schedule(
-        forecast_optimize_strategy(test, batt, history=warm, lookback_days=7),
-        strategy_name="forecast_optimize",
-    ),
-]
-print(comparison_table(metrics))
-generate_price_eda_figures(prices)
-plot_strategy_arbitrage_comparison(comparison_table(metrics))
-PY
 ```
 
-Interactive walkthrough: `notebooks/battery_dispatch.ipynb` (run with the project venv as kernel).
+Full analysis path (data → strategies → figures → hold-out):
+
+1. Open `notebooks/battery_dispatch.ipynb` with the project venv as the kernel.
+2. Run all cells top to bottom.
+
+Saved outputs (no need to re-run to inspect):
+
+- Figures → `reports/figures/`
+- Metrics → `reports/strategy_comparison.csv`, `reports/strategy_comparison_holdout.csv`
+- Data notes → `data/README.md`
+
+For a quick library smoke check from the repo root:
+
+```bash
+python -c "from src.data_loader import load_clean_prices; from src.optimizer import optimize_dispatch; p,_=load_clean_prices(); print(round(optimize_dispatch(p).objective_value, 2))"
+```
 
 ## Project layout
 
